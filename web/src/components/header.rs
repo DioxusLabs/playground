@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 
-const SPINNER: Asset = asset!("/public/spinner.svg");
+// const SPINNER: manganis::Asset = asset!("/public/spinner.svg");
+const SPINNER: &str = "/public/spinner.svg";
 
 #[component]
 pub fn Header(is_compiling: bool, queue_position: Option<u32>, on_run: EventHandler) -> Element {
