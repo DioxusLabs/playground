@@ -1,33 +1,88 @@
-use crate::components::{Header, RightPane, Tab};
+use crate::components::Tab;
+use base64::{prelude::BASE64_URL_SAFE, Engine};
+use bindings::monaco;
+use components::material_icons::Warning;
 use dioxus::prelude::*;
+use dioxus_document::{eval, Link};
 use dioxus_logger::tracing::error;
+use dioxus_sdk::theme::{use_system_theme, SystemTheme};
 use error::AppError;
 
+mod bindings;
 mod components;
 mod error;
+mod examples;
 mod ws;
 
-const _: &str = asset!("/public/dxp.css");
-const SNIPPET_WELCOME: &str = include_str!("snippets/welcome.rs");
+const DXP_CSS: &str = asset!("/assets/dxp.css");
+const MONACO_FOLDER: &str = "/monaco-editor-0.52"; //asset!(folder("/assets/monaco-editor-0.52"));
 
-// Ace editor
-//const _: &str = manganis::mg!(file("public/ace/ace.js"));
-//const _: &str = manganis::mg!(file("public/ace/mode-rust.js"));
-//const _: &str = manganis::mg!(file("public/ace/theme-github.js"));
+/// The URLS that the playground should use for locating resources and services.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaygroundUrls {
+    /// The URL to the websocket server.
+    pub socket: &'static str,
+    /// The URL to the built project files from the server.
+    pub built: &'static str,
+    /// The url location of the playground UI: e.g. `https://dioxuslabs.com/play`
+    pub location: &'static str,
+}
 
 #[component]
-pub fn Playground(socket_url: String, built_url: String) -> Element {
+pub fn Playground(urls: PlaygroundUrls, share_code: Option<String>) -> Element {
     let mut is_compiling = use_signal(|| false);
     let queue_position = use_signal(|| None);
     let built_page_id = use_signal(|| None);
     let mut compiler_messages = use_signal(Vec::<String>::new);
     let mut current_tab = use_signal(|| Tab::Page);
+    let mut show_share_warning = use_signal(|| false);
 
     let mut build_signals = BuildSignals {
         is_compiling,
         built_page_id,
         compiler_messages,
         queue_position,
+    };
+
+    // We store the shared code in state as the editor may not be initialized yet.
+    let shared_code = use_memo(use_reactive((&share_code,), move |(share_code,)| {
+        let share_code = share_code?;
+        let decoded = decode_share_link(&share_code).ok()?;
+
+        show_share_warning.set(true);
+
+        // If monaco is initialized, set it now. Otherwise save it for monaco onload code.
+        if monaco::is_ready() {
+            monaco::set_current_model_value(&decoded);
+            return None;
+        }
+
+        Some(decoded)
+    }));
+
+    let monaco_vs_prefix = format!("{}/vs", MONACO_FOLDER);
+    let monaco_vs_prefix_c = monaco_vs_prefix.clone();
+
+    let system_theme = use_system_theme();
+    use_effect(move || {
+        let theme = system_theme().unwrap_or(SystemTheme::Light);
+        bindings::monaco::set_theme(theme);
+    });
+
+    // Load either the shared code or the first snippet once monaco script is ready.
+    let on_monaco_load = move |_| {
+        let system_theme = system_theme().unwrap_or(SystemTheme::Light);
+        let snippet = match shared_code() {
+            Some(c) => c,
+            None => examples::SNIPPETS[0].1.to_string(),
+        };
+
+        bindings::monaco::init(
+            &monaco_vs_prefix_c,
+            "dxp-panes-left",
+            system_theme,
+            &snippet,
+        );
     };
 
     // Change tab automatically
@@ -39,44 +94,6 @@ pub fn Playground(socket_url: String, built_url: String) -> Element {
         }
     });
 
-    // Once the element has mounted, startup `ace` editor.
-    let on_editor_mount = move |_| {
-        let code = format!(
-            r#"
-            let editor = ace.edit("dxp-editor");
-
-            let RustMode = ace.require("ace/mode/rust").Mode;
-            editor.session.setMode(new RustMode());
-
-            editor.setValue(`{SNIPPET_WELCOME}`, -1);
-
-            // Set a global so other evals can acces it.
-            window.editorGlobal = editor;
-
-            let remove = null;
-            const updateTheme = () => {{
-                if (remove != null) {{
-                    remove();
-                }}
-                const media = window.matchMedia("(prefers-color-scheme: dark");
-                media.addEventListener("change", updateTheme);
-                remove = () => {{
-                    media.removeEventListener("change", updateTheme);
-                }};
-
-                if (media.matches) {{
-                    window.editorGlobal.setTheme("ace/theme/github_dark");
-                }} else {{
-                    window.editorGlobal.setTheme("ace/theme/github");
-                }}
-            }};
-
-            updateTheme();
-            "#
-        );
-        eval(&code);
-    };
-
     // Send a request to compile code.
     let on_run = move |_| {
         if is_compiling() {
@@ -87,7 +104,7 @@ pub fn Playground(socket_url: String, built_url: String) -> Element {
         is_compiling.set(true);
         compiler_messages.push("Starting build...".to_string());
 
-        let socket_url = socket_url.clone();
+        let socket_url = urls.socket.to_string();
 
         spawn(async move {
             if let Err(e) = start_build(&mut build_signals, socket_url).await {
@@ -99,24 +116,39 @@ pub fn Playground(socket_url: String, built_url: String) -> Element {
     };
 
     // Build full url to built page.
-    let built_page_url = use_memo(move || built_page_id().map(|id| format!("{}{}", built_url, id)));
+    let built_page_url =
+        use_memo(move || built_page_id().map(|id| format!("{}{}", urls.built, id)));
+
+    // State for pane resizing, shared by headers and panes.
+    // The actual logic is in the panes component.
+    let pane_left_width: Signal<Option<i32>> = use_signal(|| None);
+    let pane_right_width: Signal<Option<i32>> = use_signal(|| None);
 
     rsx! {
-        div { id: "dxp-pane-container",
-            div { id: "dxp-left-pane",
-                Header {
-                    is_compiling: is_compiling(),
-                    queue_position: queue_position(),
-                    on_run,
-                }
-                div { id: "dxp-editor", onmounted: on_editor_mount }
-            }
+        // Head elements
+        Link { rel: "stylesheet", href: DXP_CSS }
+        script { src: "{monaco_vs_prefix}/loader.js", onload: on_monaco_load }
 
-            RightPane {
-                current_tab,
-                compiler_messages,
-                built_page_url: built_page_url(),
+        // Share warning
+        if show_share_warning() {
+            components::Modal {
+                icon: rsx! { Warning {} },
+                title: "Do you trust this code?",
+                text: "Anyone can share their project. Verify that nothing malicious has been included before running this project.",
+                on_ok: move |_| show_share_warning.set(false),
             }
+        }
+
+        // Playground UI
+        components::Header {
+            pane_left_width,
+            pane_right_width,
+            urls,
+            on_run,
+        }
+        components::Panes {
+            pane_left_width,
+            pane_right_width,
         }
     }
 }
@@ -132,19 +164,7 @@ pub(crate) struct BuildSignals {
 
 /// Start a build and handle updating the build signals according to socket messages.
 async fn start_build(signals: &mut BuildSignals, socket_url: String) -> Result<(), AppError> {
-    let mut eval = eval(
-        r#"
-        let text = window.editorGlobal.getValue();
-        dioxus.send(text);
-        "#,
-    );
-
-    // Decode eval
-    let val = eval.recv().await?;
-    let val = val
-        .as_str()
-        .ok_or(AppError::JsError("eval didn't provide str".into()))?
-        .to_string();
+    let val = bindings::monaco::get_current_model_value();
 
     // Send socket compile request
     let mut socket = ws::Socket::new(&socket_url)?;
@@ -174,4 +194,45 @@ fn reset_signals(signals: &mut BuildSignals) {
     signals.queue_position.set(None);
     signals.built_page_id.set(None);
     signals.compiler_messages.clear();
+}
+
+/// Copy a share link to the clipboard.
+///
+/// This will:
+/// 1. Get the current code from the editor.
+/// 2. Compress it using `miniz_oxide`.
+/// 3. Encodes it in url-safe base64.
+/// 4. Formats the code with the provided `location` url prefix.
+/// 5. Copies the link to the clipboard.
+///
+/// This allows users to have primitve serverless sharing.
+/// Links will be large and ugly but it works.
+fn copy_share_link(location: &str) {
+    let code = monaco::get_current_model_value();
+    let compressed = miniz_oxide::deflate::compress_to_vec(code.as_bytes(), 10);
+
+    let mut encoded = String::new();
+    BASE64_URL_SAFE.encode_string(compressed, &mut encoded);
+
+    let formatted = format!("{}/{}", location, encoded);
+
+    let e = eval(
+        r#"
+        const data = await dioxus.recv();
+        navigator.clipboard.writeText(data);
+        "#,
+    );
+
+    let _ = e.send(formatted);
+}
+
+/// Decode the share code into code.
+fn decode_share_link(share_code: &str) -> Result<String, AppError> {
+    let bytes = BASE64_URL_SAFE
+        .decode(share_code)
+        .map_err(|_| AppError::ShareCodeDecoding)?;
+    let decoded_bytes =
+        miniz_oxide::inflate::decompress_to_vec(&bytes).map_err(|_| AppError::ShareCodeDecoding)?;
+    let decoded = String::from_utf8(decoded_bytes).map_err(|_| AppError::ShareCodeDecoding)?;
+    Ok(decoded)
 }

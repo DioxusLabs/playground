@@ -1,35 +1,100 @@
+use crate::components::material_icons::ArrowDownIcon;
+use crate::copy_share_link;
+use crate::{bindings::monaco, examples, PlaygroundUrls};
 use dioxus::prelude::*;
-
-const SPINNER: &str = asset!("/public/spinner.svg");
+use dioxus_sdk::utils::timing::use_debounce;
+use std::time::Duration;
 
 #[component]
-pub fn Header(is_compiling: bool, queue_position: Option<u32>, on_run: EventHandler) -> Element {
-    let on_clear = move |_| {
-        eval("window.editorGlobal.setValue(\"\");");
-    };
+pub fn Header(
+    urls: PlaygroundUrls,
+    pane_left_width: Signal<Option<i32>>,
+    pane_right_width: Signal<Option<i32>>,
+    on_run: EventHandler,
+) -> Element {
+    let mut examples_open = use_signal(|| false);
+    let mut show_share_copied = use_signal(|| false);
+
+    let mut reset_share_copied = use_debounce(Duration::from_secs(1), move |()| {
+        show_share_copied.set(false);
+    });
 
     rsx! {
-        div { id: "dxp-header",
+        div {
+            id: "dxp-header",
+            // Left pane header
+            div {
+                id: "dxp-header-left",
+                style: if let Some(val) = pane_left_width() { "width:{val}px;" },
 
-            button {
-                id: "dxp-run-button",
-                class: if is_compiling { "disabled" },
-
-                onclick: move |_| on_run.call(()),
-                if is_compiling {
-                    img { class: "dxp-spinner", src: "{SPINNER}" }
-
-                    if let Some(pos) = queue_position {
-                        "#{pos}"
-                    }
-                } else {
+                // Run button
+                button {
+                    id: "dxp-run-btn",
+                    class: "dxp-ctrl-btn",
+                    onclick: move |_| on_run.call(()),
                     "Run"
                 }
+
+                // Examples button/menu
+                div {
+                    id: "dxp-examples-btn-container",
+                    button {
+                        id: "dxp-examples-btn",
+                        class: "dxp-ctrl-btn",
+                        class: if examples_open() { "dxp-open" },
+                        onclick: move |_| examples_open.set(!examples_open()),
+                        "Examples"
+                        ArrowDownIcon {}
+                    }
+
+                    if examples_open() {
+                        div {
+                            id: "dxp-examples-dropdown",
+
+                            for snippet in examples::SNIPPETS {
+                                button {
+                                    onclick: move |_| {
+                                        examples_open.set(false);
+                                        monaco::set_current_model_value(snippet.1);
+                                    },
+                                    "{snippet.0}"
+                                }
+                            }
+                        }
+                    }
+                }
+                div {
+                    id: "dxp-header-left-divider",
+                }
+                button {
+                    class: "dxp-ctrl-btn dxp-file-btn dxp-selected-file",
+                    "main.rs"
+                }
+                // Keeping this for future-multi-file
+                // button {
+                //     class: "dxp-ctrl-btn dxp-file-btn",
+                //     "Cargo.toml"
+                // }
             }
 
-            h1 { id: "dxp-title", "Dioxus Playground" }
+            // Right pane header
+            div {
+                id: "dxp-header-right",
+                style: if let Some(val) = pane_right_width() { "width:{val}px;" } else { "".to_string() },
 
-            button { id: "dxp-clear-button", onclick: on_clear, "Clear" }
+                // Share button
+                button {
+                    id: "dxp-share-btn",
+                    class: "dxp-ctrl-btn",
+                    onclick: move |_| {
+                        copy_share_link(urls.location);
+                        show_share_copied.set(true);
+                        reset_share_copied.action(());
+                    },
+                    if show_share_copied() { "Copied" } else { "Share" }
+                }
+            }
         }
     }
 }
+

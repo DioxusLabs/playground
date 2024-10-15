@@ -1,0 +1,14 @@
+[package]
+name = "runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dioxus-playground = { path = "../web" }
+
+dioxus = { workspace = true, features = ["web", "router"] }
+dioxus-logger = { workspace = true }
+dioxus-document = { workspace = true }
+
+[features]
+real-server = [] # Run the playground with the real server.
