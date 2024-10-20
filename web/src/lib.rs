@@ -74,7 +74,7 @@ pub fn Playground(socket_url: String, built_url: String) -> Element {
             updateTheme();
             "#
         );
-        eval(&code);
+        document::eval(&code);
     };
 
     // Send a request to compile code.
@@ -132,7 +132,7 @@ pub(crate) struct BuildSignals {
 
 /// Start a build and handle updating the build signals according to socket messages.
 async fn start_build(signals: &mut BuildSignals, socket_url: String) -> Result<(), AppError> {
-    let mut eval = eval(
+    let mut eval = document::eval(
         r#"
         let text = window.editorGlobal.getValue();
         dioxus.send(text);
@@ -140,11 +140,7 @@ async fn start_build(signals: &mut BuildSignals, socket_url: String) -> Result<(
     );
 
     // Decode eval
-    let val = eval.recv().await?;
-    let val = val
-        .as_str()
-        .ok_or(AppError::JsError("eval didn't provide str".into()))?
-        .to_string();
+    let val = eval.recv::<String>().await?;
 
     // Send socket compile request
     let mut socket = ws::Socket::new(&socket_url)?;

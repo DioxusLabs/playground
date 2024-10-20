@@ -21,7 +21,7 @@ pub fn RightPane(
         }
 
         // Scrolls to the bottom of the log pane
-        eval(
+        document::eval(
             r#"
             let pane = document.getElementById("dxp-right-pane");
             pane.scrollTop = pane.scrollHeight;
@@ -69,13 +69,13 @@ pub fn RightPane(
 
             match current_tab() {
                 Tab::Page => rsx! {
-                    iframe {
-                        src: built_page_url,
-                    }
+                    iframe { src: built_page_url }
                 },
-                Tab::Logs => rsx! { {logs().iter()} },
+                Tab::Logs => rsx! {
+                    {logs().iter()}
+                },
             }
-
+        
         }
     }
 }
