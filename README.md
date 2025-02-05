@@ -1,3 +1,7 @@
+# This repo has moved!
+
+https://github.com/DioxusLabs/docsite/tree/main/packages/playground
+
 ## Dioxus Playground
 Dioxus Playground is a code playground similar to the Rust playground except it is tailored specifically for Dioxus and it's features.
 
